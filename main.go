@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"strconv"
 
 	"github.com/lucasb-eyer/go-colorful"
 )
@@ -14,24 +15,21 @@ type RGBf struct {
 	r, g, b float64
 }
 
-func main() {
-	const bpc = 1 // bits per channel
-
-	f, err := os.Open("gray.png")
-	if err != nil {
-		panic(err)
-	}
-
-	img, err := png.Decode(f)
-	if err != nil {
-		panic(err)
-	}
+func dither(img image.Image, bpc int) *image.RGBA {
+	errwindow := 2
 
 	res := image.NewRGBA(img.Bounds())
-	errdiff := [][]RGBf{make([]RGBf, img.Bounds().Dx()), make([]RGBf, img.Bounds().Dx())}
+	errbuf := [][]RGBf{}
+	for i := 0; i < errwindow; i++ {
+		errbuf = append(errbuf, make([]RGBf, img.Bounds().Dx()))
+	}
+
+	errdiff := func(x, y int) *RGBf {
+		return &errbuf[y%errwindow][x]
+	}
 
 	nearest := func(x uint8) uint8 {
-		k := 1.0 / 0xff * ((1 << bpc) - 1)
+		k := float64(int(1<<bpc)-1) / 0xff
 		return uint8(math.Round(float64(x)*k) / k)
 	}
 
@@ -43,11 +41,11 @@ func main() {
 			return
 		}
 
-		c := errdiff[y&0x1][x]
+		c := *errdiff(x, y)
 		c.r += err_linear.r * k
 		c.g += err_linear.g * k
 		c.b += err_linear.b * k
-		errdiff[y&0x1][x] = c
+		*errdiff(x, y) = c
 	}
 
 	for y := 0; y < img.Bounds().Dy(); y++ {
@@ -56,16 +54,12 @@ func main() {
 			var c_nearest colorful.Color
 			{
 				c, _ := colorful.MakeColor(img.At(x, y))
-				r, g, b := c.LinearRgb() // adding error
-				c_target = colorful.LinearRgb(r+errdiff[y&0x1][x].r, g+errdiff[y&0x1][x].g, b+errdiff[y&0x1][x].b)
+				r, g, b := c.LinearRgb()
+				c_target = colorful.LinearRgb(r+errdiff(x, y).r, g+errdiff(x, y).g, b+errdiff(x, y).b)
 
-				errdiff[y&0x1][x] = RGBf{} // clear your buffer!!!
+				*errdiff(x, y) = RGBf{} // clear your buffer!!!
 
 				R, G, B := c_target.Clamped().RGB255()
-
-				//if y > 60 && y < 100 && y%2 == 0 && x < 20 {
-				//	fmt.Println(x, y, c_target, R, G, B)
-				//}
 
 				cc := color.RGBA{nearest(R), nearest(G), nearest(B), 0xff} // i don't deal with alpha
 				res.Set(x, y, cc)
@@ -87,7 +81,27 @@ func main() {
 		}
 	}
 
-	f, err = os.Create("out.png")
+	return res
+}
+
+func main() {
+	f, err := os.Open(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+
+	img, err := png.Decode(f)
+	if err != nil {
+		panic(err)
+	}
+
+	bpc, err := strconv.Atoi(os.Args[3])
+	if err != nil {
+		panic(err)
+	}
+	res := dither(img, bpc)
+
+	f, err = os.Create(os.Args[2])
 	if err != nil {
 		panic(err)
 	}
